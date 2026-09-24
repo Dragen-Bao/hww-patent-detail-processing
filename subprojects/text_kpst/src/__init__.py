@@ -1,7 +1,13 @@
-"""Core implementation for the Chinese-patent KPST text project."""
+"""Core components of the Chinese patent KPST pipeline."""
 
-from .metrics import compute_kpst_metrics
+from .metrics import add_field_adjustment, compute_kpst_metrics
 from .preprocess import PatentTextPreprocessor
-from .tfbidf import build_pit_tfbidf
+from .tfbidf import BIDFHistoryState, build_pit_tfbidf
 
-__all__ = ["PatentTextPreprocessor", "build_pit_tfbidf", "compute_kpst_metrics"]
+__all__ = [
+    "BIDFHistoryState",
+    "PatentTextPreprocessor",
+    "add_field_adjustment",
+    "build_pit_tfbidf",
+    "compute_kpst_metrics",
+]

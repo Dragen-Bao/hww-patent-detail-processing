@@ -1,10 +1,4 @@
-"""Chinese patent-text preprocessing for the KPST baseline.
-
-The paper fixes the economic design (word-level text vectors, TF-BIDF and
-patent-to-patent cosine similarity) but does not disclose a complete tokenizer
-configuration. Jieba is therefore an explicit project implementation choice,
-not a claim about the authors' private code.
-"""
+"""Chinese patent text preprocessing for the KPST baseline."""
 
 from __future__ import annotations
 
@@ -14,13 +8,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-
 TOKEN_KEEP_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9+#.\-]+")
 WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalize_patent_text(value: object) -> str:
-    """Normalize Unicode and whitespace while preserving technical tokens such as 5G."""
     if value is None:
         return ""
     text = unicodedata.normalize("NFKC", str(value))
@@ -28,23 +20,17 @@ def normalize_patent_text(value: object) -> str:
         character if not unicodedata.category(character).startswith("C") else " "
         for character in text
     )
-    text = WHITESPACE_RE.sub(" ", text).strip()
-    return text
+    return WHITESPACE_RE.sub(" ", text).strip()
 
 
-def combine_patent_text(
-    *,
-    title: object = "",
-    abstract: object = "",
-    main_claim: object = "",
-) -> str:
-    """Combine available patent text fields without silently inventing missing fields."""
-    values = []
-    for value in (title, abstract, main_claim):
-        normalized = normalize_patent_text(value)
-        if normalized:
-            values.append(normalized)
-    return " ".join(values)
+def combine_patent_text(row: dict[str, object], fields: Iterable[str]) -> str:
+    """Combine explicitly configured source fields in order."""
+    parts: list[str] = []
+    for field in fields:
+        value = normalize_patent_text(row.get(field, ""))
+        if value:
+            parts.append(value)
+    return " ".join(parts)
 
 
 def _load_word_set(path: Path | None) -> set[str]:
@@ -59,11 +45,15 @@ def _load_word_set(path: Path | None) -> set[str]:
 
 @dataclass
 class PatentTextPreprocessor:
-    """Configurable word-level tokenizer for Chinese patent text."""
+    """Configurable word-level tokenizer.
+
+    Jieba is an explicit implementation choice. The supplied appendix does not
+    publish the authors' exact tokenizer dictionary or stopword list.
+    """
 
     stopwords: set[str] | None = None
     user_dictionary: Path | None = None
-    keep_single_char: bool = False
+    keep_single_char: bool = True
     tokenizer: Callable[[str], Iterable[str]] | None = None
 
     @classmethod
@@ -72,7 +62,7 @@ class PatentTextPreprocessor:
         *,
         stopwords_path: Path | None = None,
         user_dictionary: Path | None = None,
-        keep_single_char: bool = False,
+        keep_single_char: bool = True,
     ) -> "PatentTextPreprocessor":
         return cls(
             stopwords=_load_word_set(stopwords_path),
@@ -83,10 +73,10 @@ class PatentTextPreprocessor:
     def _jieba_tokenizer(self) -> Callable[[str], Iterable[str]]:
         try:
             import jieba
-        except ImportError as exc:  # pragma: no cover - environment dependent
+        except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "Jieba is required for the default Chinese tokenizer. "
-                "Install jieba, or pass a custom tokenizer callable."
+                "Jieba is required for the default tokenizer. Install jieba or "
+                "pass a custom tokenizer callable."
             ) from exc
         if self.user_dictionary is not None:
             jieba.load_userdict(str(self.user_dictionary))
@@ -105,7 +95,11 @@ class PatentTextPreprocessor:
                 continue
             if not TOKEN_KEEP_RE.fullmatch(token):
                 continue
-            if not self.keep_single_char and len(token) == 1 and re.fullmatch(r"[\u4e00-\u9fff]", token):
+            if (
+                not self.keep_single_char
+                and len(token) == 1
+                and re.fullmatch(r"[\u4e00-\u9fff]", token)
+            ):
                 continue
             tokens.append(token)
         return tokens

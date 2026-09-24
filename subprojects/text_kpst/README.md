@@ -1,50 +1,72 @@
-# Chinese Patent KPST Text Subproject
+# Chinese Patent KPST Text Pipeline
 
-This directory is the new main text-analysis track. It is separate from the
-legacy character n-gram/hash-centroid baseline in preprocessing/patent_detail/text_pipeline.py.
+This is the main patent-text quality track. The old character n-gram/hash-centroid code in `preprocessing/patent_detail/text_pipeline.py` is retained as legacy code only.
 
-## Research target
+## Source-grounded baseline
 
-The baseline follows the method family in Chen et al., Economic Research Journal
-(2026), itself based on Kelly, Papanikolaou, Seru and Taddy (KPST):
+The supplied Chen et al. (2026) appendix defines the core procedure as:
 
-1. word-level sparse patent vectors;
-2. backward inverse document frequency (BIDF);
-3. patent-to-patent cosine similarity;
-4. five-year backward and forward windows;
-5. average rather than summed similarities;
-6. same-applicant exclusion;
-7. same-IPC backward and all-IPC forward as the baseline comparison design.
+1. real word-level one-hot vectors;
+2. TF × BIDF, with `BIDF_pw = log(N_prior / (1 + df_prior,w))`;
+3. L2 normalization and cosine similarity;
+4. five application years backward and forward;
+5. similarity sums divided by the patent counts in the corresponding year window;
+6. same-applicant exclusion using applicant + address;
+7. Appendix Table 1 method 6 as the baseline: backward similarity within the same IPC field, forward similarity across all IPC fields, with same-applicant exclusion;
+8. annual technology-field adjustment from relative backward similarity, multiplied by FS/BS.
 
-The technology-field adjustment is intentionally left as a separate auditable
-layer until its exact implementation choices are finalized.
+The appendix defines `N_k` as the number of granted invention patents applied for in year `k`, so the comparison universe here is granted inventions.
 
-## Deliberate implementation choices
+## Explicit implementation choices
 
-The appendix does not publish a complete tokenizer dictionary, stopword list,
-numerical BIDF edge-case convention, or full applicant-disambiguation code.
-Those items remain explicit configuration choices.
+The appendix does not disclose every engineering detail. These are transparent project choices:
 
-The first implementation uses Jieba for Chinese word segmentation. This is our
-implementation choice, not a claim about the authors' private tokenizer.
-A custom patent dictionary and stopword file can be supplied.
+- Chinese segmentation: Jieba.
+- Default text: patent title + abstract.
+- Main claim is retained in the canonical patent layer but not included by default.
+- No stopword list and no frequency pruning by default; BIDF handles common words.
+- BIDF history is strict-prior by application date with same-day batch freeze.
+- IPC field key is the main group parsed from `IPC主分类号`, e.g. `H01M4/02 -> H01M4`.
 
-Digits are preserved by default because technical strings such as 5G can carry
-substantive information.
+Appendix Table 1 and the surrounding paragraph identify method 6 as forward all-IPC + backward same-IPC + same-applicant exclusion. One nearby footnote is textually inconsistent with that table; the implementation follows the explicit method-6 definition in the table and surrounding paragraph.
 
-## Current modules
+## Structure
 
-- src/preprocess.py: Unicode normalization and configurable Jieba tokenization.
-- src/tfbidf.py: one-word-one-dimension point-in-time TF-BIDF sparse vectors.
-- src/similarity.py: memory-bounded sparse cosine aggregation.
-- src/metrics.py: five-year average BS/FS and the unadjusted KPST ratio.
+- `preprocessing/patent_detail/canonical.py`: reads the actual 31-column raw CSV, repairs wrapped rows, deduplicates by application number, keeps title/abstract/main claim, builds applicant identity, parses IPC main group, and writes reusable patent/firm-edge Parquet partitions.
+- `subprojects/text_kpst/src/preprocess.py`: Jieba word segmentation.
+- `subprojects/text_kpst/src/tfbidf.py`: equations (1)-(3), strict-prior TF-BIDF, L2 normalization.
+- `subprojects/text_kpst/src/scalable.py`: year-sharded sparse matrices and memory-bounded BS/FS scoring. It uses the exact identity `sum cosine = row dot vector-sum`, so it does not build a full N×N pair matrix.
+- `subprojects/text_kpst/src/metrics.py`: equations (7)-(10), including field adjustment.
+- `subprojects/text_kpst/src/aggregation.py`: patent-level to market-quarter and listed-company-quarter outputs.
 
-## Integration status
+## Run
 
-This first refactor does not overwrite existing production outputs. The next
-integration step is a shared canonical patent table containing application
-metadata, applicant, IPC, abstract and main-claim text, then feeding that table
-into this subproject.
+Install dependencies:
 
-The old hash-centroid score is retained only as a legacy baseline. It is not
-designated as a robustness test for KPST.
+```bash
+uv sync
+```
+
+Run the full pipeline:
+
+```bash
+python -m subprojects.text_kpst.run --config subprojects/text_kpst/config/default.json
+```
+
+Or resume by stage:
+
+```bash
+python -m subprojects.text_kpst.run --stage canonical
+python -m subprojects.text_kpst.run --stage vectors
+python -m subprojects.text_kpst.run --stage score
+python -m subprojects.text_kpst.run --stage aggregate
+```
+
+Main outputs:
+
+- `patent_scores/kpst-YYYY.parquet`: patent-level BS, FS, field adjustment and quality.
+- `firm_quarter_kpst.parquet/csv`: listed-company-quarter panel.
+- `market_quarter_kpst.parquet/csv`: market-quarter panel.
+- `run_manifest.json`: configuration and method notes.
+
+The final five years do not have a complete five-year forward window. They are retained with `forward_window_complete=0`, and `kpst_quality_adjusted_complete` is missing unless both backward and forward windows are complete.
