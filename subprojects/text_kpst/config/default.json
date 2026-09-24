@@ -1,0 +1,26 @@
+{
+  "method": "chen_et_al_kpst_baseline",
+  "text_fields": ["abstract", "main_claim"],
+  "tokenizer": "jieba",
+  "stopwords_path": null,
+  "user_dictionary_path": null,
+  "keep_single_char": false,
+  "min_corpus_frequency": 20,
+  "bidf_smoothing": 1.0,
+  "bidf_time_rule": "strict_prior_application_year_year_batch_freeze",
+  "window_years": 5,
+  "backward_scope": "same_ipc",
+  "forward_scope": "all_ipc",
+  "exclude_same_applicant": true,
+  "same_ipc_target": "main_group",
+  "similarity_block_size": 50000,
+  "history_start_year": 1985,
+  "formal_sample_start_year": 1994,
+  "notes": {
+    "jieba": "implementation choice; the appendix does not disclose an exact tokenizer configuration",
+    "min_corpus_frequency": "implementation choice pending final literature/code audit",
+    "bidf_smoothing": "implementation choice kept explicit because the appendix does not expose all numerical edge-case conventions",
+    "title": "not included until a verified title field is available in the local source data",
+    "applicant_disambiguation": "paper uses applicant plus street-level address; current local schema must be audited for an address field before matching that rule"
+  }
+}
