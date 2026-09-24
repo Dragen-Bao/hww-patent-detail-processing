@@ -96,12 +96,14 @@ def run_pipeline(config_path: Path, *, stage: str = "all", force: bool = False) 
         "force": force,
         "results": results,
         "method_notes": {
-            "sample": "granted invention patents available in the raw canonical universe",
+            "sample": "granted invention patents with a non-empty configured text vector",
             "bidf": "equation (3): log(N_prior/(1+df_prior)), strict prior application date",
             "method_6": "backward same IPC main-group domain; forward all IPC; same applicant excluded",
-            "applicant_identity": "normalized applicant name + applicant address",
+            "applicant_identity": "normalized applicant name + applicant address; missing identity is not used for same-applicant exclusion",
             "field_adjustment": "equations (9)-(10)",
             "future_window": "incomplete last-five-year scores are retained but explicitly flagged",
+            "denominator": "annual counts of vectorizable granted inventions; coverage against all granted inventions is audited in text_coverage_by_year.csv",
+            "force_rebuild": "canonical, vector, and score stage directories are cleaned before every actual rebuild",
         },
     }
     (output_root / "run_manifest.json").write_text(

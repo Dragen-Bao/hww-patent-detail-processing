@@ -6,9 +6,12 @@
   "canonical_buffer_records": 2000,
   "history_start_year": 1985,
   "formal_sample_start_year": 1994,
-  "comparison_sample": "granted_invention_all_available_relations",
+  "comparison_sample": "granted_invention_with_nonempty_configured_text_vector",
   "target_firm_scope": "listed_company_and_controlled_subsidiary",
-  "text_fields": ["patent_title", "abstract"],
+  "text_fields": [
+    "patent_title",
+    "abstract"
+  ],
   "tokenizer": "jieba",
   "stopwords_path": null,
   "user_dictionary_path": null,
@@ -27,6 +30,9 @@
     "jieba": "Implementation choice; the appendix does not disclose the authors' tokenizer configuration.",
     "ipc_domain": "Main-group key from IPC主分类号; the key contains Section/Class/Subclass/Main Group hierarchy.",
     "method_6": "Appendix Table 1 identifies method 6 as the baseline: forward all IPC + backward same IPC + same-applicant exclusion. A nearby footnote is textually inconsistent with that table; the implementation follows the table and surrounding main paragraph.",
-    "end_of_sample": "Forward similarity intrinsically requires future patents. Last-five-year observations are computed with available data and flagged as incomplete; a complete-window quality column is also produced."
+    "end_of_sample": "Forward similarity intrinsically requires future patents. Last-five-year observations are computed with available data and flagged as incomplete; a complete-window quality column is also produced.",
+    "denominator": "BS/FS denominators use annual counts of vectorizable granted inventions. All granted inventions and text coverage are separately audited by year.",
+    "missing_applicant": "Same-applicant exclusion is applied only when applicant identity is non-empty. Missing identities are never grouped together.",
+    "force_rebuild": "Every actual canonical/vector/score rebuild clears its stage output directories first to prevent stale shards."
   }
 }

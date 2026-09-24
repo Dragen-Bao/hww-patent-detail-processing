@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -414,8 +415,17 @@ def build_canonical_dataset(
     shard_count: int = 128,
     buffer_records: int = 2000,
 ) -> dict[str, object]:
-    """Stream the raw CSV and build reusable canonical patent/firm-edge tables."""
+    """Stream the raw CSV and build reusable canonical patent/firm-edge tables.
+
+    Every rebuild starts from clean stage directories so stale Parquet shards
+    can never leak into a new canonical dataset.
+    """
     raw_root = output_root / "raw_parts"
+    canonical_root = output_root / "canonical_patents"
+    edge_root = output_root / "firm_edges"
+    for directory in (raw_root, canonical_root, edge_root):
+        if directory.exists():
+            shutil.rmtree(directory)
     raw_root.mkdir(parents=True, exist_ok=True)
     buffers: dict[int, list[dict[str, object]]] = {i: [] for i in range(shard_count)}
     part_numbers: Counter[int] = Counter()
@@ -448,8 +458,6 @@ def build_canonical_dataset(
     for shard in range(shard_count):
         flush(shard)
 
-    canonical_root = output_root / "canonical_patents"
-    edge_root = output_root / "firm_edges"
     patent_count = 0
     edge_count = 0
     granted_invention_count = 0
@@ -478,6 +486,7 @@ def build_canonical_dataset(
         "granted_invention_count": granted_invention_count,
         "shard_count": shard_count,
         "buffer_records": buffer_records,
+        "stage_directories_cleaned_before_build": True,
     }
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "canonical_manifest.json").write_text(

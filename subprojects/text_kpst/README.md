@@ -15,7 +15,7 @@ The supplied Chen et al. (2026) appendix defines the core procedure as:
 7. Appendix Table 1 method 6 as the baseline: backward similarity within the same IPC field, forward similarity across all IPC fields, with same-applicant exclusion;
 8. annual technology-field adjustment from relative backward similarity, multiplied by FS/BS.
 
-The appendix defines `N_k` as the number of granted invention patents applied for in year `k`, so the comparison universe here is granted inventions.
+The appendix defines `N_k` as the number of granted invention patents applied for in year `k`. In the local database, some granted inventions can have no usable configured text. The executable comparison universe is therefore defined explicitly as granted inventions with a non-empty vector. The pipeline writes `text_coverage_by_year.csv` so the gap from all granted inventions is visible rather than silently changing the denominator.
 
 ## Explicit implementation choices
 
@@ -70,3 +70,10 @@ Main outputs:
 - `run_manifest.json`: configuration and method notes.
 
 The final five years do not have a complete five-year forward window. They are retained with `forward_window_complete=0`, and `kpst_quality_adjusted_complete` is missing unless both backward and forward windows are complete.
+
+
+## Data-integrity safeguards
+
+- Missing applicant identity does not trigger same-applicant exclusion. Empty identities are never grouped together; the rule is symmetric for backward and forward comparisons.
+- `text_coverage_by_year.csv` reports all granted inventions, tokenized patents, vectorizable patents, missing applicant identity/address, and missing IPC domain by year.
+- Every actual rebuild of the canonical, vector, or score stage clears that stage's previous shard directories before writing. This prevents stale Parquet/NPZ files from contaminating a forced rebuild or a rebuild after parameter/input changes.

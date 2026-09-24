@@ -9,6 +9,7 @@ without materializing an N x N patent-pair matrix.
 from __future__ import annotations
 
 import json
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Iterable
@@ -50,7 +51,15 @@ def tokenize_and_build_vocabulary(
     keep_single_char: bool = True,
     min_corpus_frequency: int = 1,
 ) -> tuple[dict[str, int], dict[int, int]]:
-    """First pass: tokenize granted inventions, persist tokens, build vocabulary."""
+    """First pass: tokenize granted inventions, persist tokens, build vocabulary.
+
+    The BS/FS denominator universe is explicitly defined as granted invention
+    patents that can form a non-empty vector under the configured text fields
+    and vocabulary. Coverage against all granted inventions is written to an
+    audit table rather than silently changing the denominator.
+    """
+    if vector_root.exists():
+        shutil.rmtree(vector_root)
     token_root = vector_root / "tokens"
     token_root.mkdir(parents=True, exist_ok=True)
     processor = PatentTextPreprocessor.from_files(
@@ -59,7 +68,7 @@ def tokenize_and_build_vocabulary(
         keep_single_char=keep_single_char,
     )
     corpus_counts: Counter[str] = Counter()
-    counts_by_year: dict[int, int] = {}
+    audit_rows: list[dict[str, object]] = []
 
     for year, _ in _year_directories(canonical_root):
         frame = _read_year(canonical_root, year)
@@ -71,15 +80,21 @@ def tokenize_and_build_vocabulary(
         ].drop_duplicates("application_no").copy()
         if frame.empty:
             continue
+
+        granted_count = len(frame)
         texts = [combine_patent_text(row, text_fields) for row in frame.to_dict(orient="records")]
         tokens = [processor.tokenize(text) for text in texts]
-        keep = np.fromiter((bool(token_list) for token_list in tokens), dtype=bool)
-        frame = frame.loc[keep].reset_index(drop=True)
-        tokens = [token_list for token_list, flag in zip(tokens, keep, strict=True) if flag]
-        for token_list in tokens:
+        has_tokens = np.fromiter((bool(token_list) for token_list in tokens), dtype=bool)
+        tokenized = frame.loc[has_tokens].reset_index(drop=True)
+        token_lists = [
+            token_list
+            for token_list, flag in zip(tokens, has_tokens, strict=True)
+            if flag
+        ]
+        for token_list in token_lists:
             corpus_counts.update(token_list)
-        counts_by_year[year] = len(frame)
-        out = frame[
+
+        out = tokenized[
             [
                 "application_no",
                 "application_date",
@@ -89,15 +104,90 @@ def tokenize_and_build_vocabulary(
                 "baseline_firm_eligible",
             ]
         ].copy()
-        out["tokens"] = [TOKEN_SEPARATOR.join(token_list) for token_list in tokens]
-        out.to_parquet(token_root / f"tokens-{year}.parquet", index=False, compression="zstd")
+        out["applicant_identity_missing_flag"] = (
+            tokenized["applicant_identity_key"].fillna("").astype(str).str.strip().eq("")
+        ).astype("int8")
+        out["applicant_address_missing_flag"] = (
+            tokenized["applicant_address"].fillna("").astype(str).str.strip().eq("")
+        ).astype("int8")
+        out["ipc_domain_missing_flag"] = (
+            tokenized["ipc_domain_key"].fillna("").astype(str).str.strip().eq("")
+        ).astype("int8")
+        out["tokens"] = [TOKEN_SEPARATOR.join(token_list) for token_list in token_lists]
+        out.to_parquet(
+            token_root / f"tokens-{year}.parquet", index=False, compression="zstd"
+        )
+        audit_rows.append(
+            {
+                "application_year": year,
+                "granted_invention_count": granted_count,
+                "tokenized_text_count": len(out),
+                "vectorizable_patent_count": 0,
+                "missing_or_empty_text_count": granted_count - len(out),
+                "applicant_identity_missing_count": 0,
+                "applicant_address_missing_count": 0,
+                "ipc_domain_missing_count": 0,
+            }
+        )
 
-    kept = sorted(token for token, count in corpus_counts.items() if count >= min_corpus_frequency)
+    kept = sorted(
+        token for token, count in corpus_counts.items() if count >= min_corpus_frequency
+    )
     vocabulary = {token: index for index, token in enumerate(kept)}
-    vocab_frame = pd.DataFrame({"token": kept, "token_id": np.arange(len(kept), dtype=np.int64)})
-    vocab_frame.to_parquet(vector_root / "vocabulary.parquet", index=False, compression="zstd")
+    vocab_frame = pd.DataFrame(
+        {"token": kept, "token_id": np.arange(len(kept), dtype=np.int64)}
+    )
+    vocab_frame.to_parquet(
+        vector_root / "vocabulary.parquet", index=False, compression="zstd"
+    )
+
+    counts_by_year: dict[int, int] = {}
+    audit_lookup = {int(row["application_year"]): row for row in audit_rows}
+    for token_path in sorted(
+        token_root.glob("tokens-*.parquet"),
+        key=lambda path: int(path.stem.split("-")[-1]),
+    ):
+        year = int(token_path.stem.split("-")[-1])
+        frame = pd.read_parquet(token_path)
+        token_lists = [
+            str(value).split(TOKEN_SEPARATOR) if str(value) else []
+            for value in frame["tokens"]
+        ]
+        vectorizable = np.fromiter(
+            (
+                any(token in vocabulary for token in token_list)
+                for token_list in token_lists
+            ),
+            dtype=bool,
+        )
+        frame = frame.loc[vectorizable].reset_index(drop=True)
+        frame.to_parquet(token_path, index=False, compression="zstd")
+        counts_by_year[year] = len(frame)
+
+        audit = audit_lookup[year]
+        audit["vectorizable_patent_count"] = len(frame)
+        audit["applicant_identity_missing_count"] = int(
+            frame["applicant_identity_missing_flag"].sum()
+        )
+        audit["applicant_address_missing_count"] = int(
+            frame["applicant_address_missing_flag"].sum()
+        )
+        audit["ipc_domain_missing_count"] = int(
+            frame["ipc_domain_missing_flag"].sum()
+        )
+        granted = int(audit["granted_invention_count"])
+        audit["text_coverage_rate"] = len(frame) / granted if granted else float("nan")
+
+    coverage = pd.DataFrame(audit_rows).sort_values("application_year")
+    coverage.to_parquet(
+        vector_root / "text_coverage_by_year.parquet", index=False, compression="zstd"
+    )
+    coverage.to_csv(
+        vector_root / "text_coverage_by_year.csv", index=False, encoding="utf-8-sig"
+    )
     (vector_root / "year_counts.json").write_text(
-        json.dumps(counts_by_year, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(counts_by_year, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     return vocabulary, counts_by_year
 
@@ -113,8 +203,10 @@ def build_vector_shards(
     token_root = vector_root / "tokens"
     matrix_root = vector_root / "matrices"
     meta_root = vector_root / "metadata"
-    matrix_root.mkdir(parents=True, exist_ok=True)
-    meta_root.mkdir(parents=True, exist_ok=True)
+    for directory in (matrix_root, meta_root):
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
     history = BIDFHistoryState.empty(len(vocabulary))
     years: list[int] = []
     row_count = 0
@@ -205,6 +297,29 @@ def _load_matrix_meta(vector_root: Path, year: int) -> tuple[sparse.csr_matrix, 
     return matrix, meta
 
 
+def _applicant_domain_keys(
+    applicants: Iterable[object], domains: Iterable[object]
+) -> pd.Series:
+    """Build a composite exclusion key only when applicant identity is known.
+
+    Missing applicant identity must not cause unrelated patents to be treated
+    as the same applicant. This keeps backward and forward exclusion rules
+    symmetric.
+    """
+    applicant_series = pd.Series(applicants).fillna("").astype(str).str.strip()
+    domain_series = pd.Series(domains).fillna("").astype(str).str.strip()
+    valid = applicant_series.ne("") & domain_series.ne("")
+    return pd.Series(
+        np.where(
+            valid,
+            applicant_series + "||DOMAIN||" + domain_series,
+            "",
+        ),
+        index=applicant_series.index,
+        dtype="object",
+    )
+
+
 def score_year(
     vector_root: Path,
     year: int,
@@ -218,8 +333,10 @@ def score_year(
     backward_sum = np.zeros(n, dtype=np.float64)
     forward_sum = np.zeros(n, dtype=np.float64)
     target_domains = target["ipc_domain_key"].fillna("").astype(str)
-    target_applicants = target["applicant_identity_key"].fillna("").astype(str)
-    target_applicant_domain = target_applicants + "||DOMAIN||" + target_domains
+    target_applicants = target["applicant_identity_key"].fillna("").astype(str).str.strip()
+    target_applicant_domain = _applicant_domain_keys(
+        target_applicants, target_domains
+    )
 
     available_years = {
         int(path.stem.split("-")[-1])
@@ -238,10 +355,9 @@ def score_year(
         backward_sum += _rowwise_dot_with_group_sums(
             target_matrix, domain_sums, domain_codes
         )
-        candidate_pair_keys = (
-            candidate["applicant_identity_key"].fillna("").astype(str)
-            + "||DOMAIN||"
-            + candidate["ipc_domain_key"].fillna("").astype(str)
+        candidate_pair_keys = _applicant_domain_keys(
+            candidate["applicant_identity_key"],
+            candidate["ipc_domain_key"],
         )
         same_sums, same_codes = _group_sums_for_target_keys(
             candidate_matrix, candidate_pair_keys, target_applicant_domain
@@ -309,6 +425,8 @@ def score_all_years(
     *,
     window_years: int = 5,
 ) -> dict[str, object]:
+    if score_root.exists():
+        shutil.rmtree(score_root)
     score_root.mkdir(parents=True, exist_ok=True)
     raw_counts = json.loads((vector_root / "year_counts.json").read_text(encoding="utf-8"))
     counts = {int(year): int(count) for year, count in raw_counts.items()}
@@ -323,7 +441,16 @@ def score_all_years(
         )
         scored.to_parquet(score_root / f"kpst-{year}.parquet", index=False, compression="zstd")
         rows += len(scored)
-    manifest = {"years": years, "row_count": rows, "window_years": window_years}
+    coverage_path = vector_root / "text_coverage_by_year.csv"
+    manifest = {
+        "years": years,
+        "row_count": rows,
+        "window_years": window_years,
+        "denominator_universe": "granted inventions with non-empty configured text vector",
+        "text_coverage_audit": str(coverage_path),
+        "same_applicant_rule": "exclude only when applicant identity key is non-empty",
+        "score_directory_cleaned_before_build": True,
+    }
     (score_root / "score_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

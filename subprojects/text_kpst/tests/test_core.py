@@ -18,6 +18,10 @@ from preprocessing.patent_detail.canonical import (
 )
 from subprojects.text_kpst.src.metrics import add_field_adjustment, compute_kpst_metrics
 from subprojects.text_kpst.src.preprocess import PatentTextPreprocessor, normalize_patent_text
+from subprojects.text_kpst.src.scalable import (
+    _applicant_domain_keys,
+    tokenize_and_build_vocabulary,
+)
 from subprojects.text_kpst.src.tfbidf import bidf_weight, build_pit_tfbidf
 
 
@@ -182,3 +186,48 @@ def test_canonicalization_keeps_longest_text_and_baseline_relation():
     assert canonical.loc[0, "abstract"] == "这是更长的摘要"
     assert canonical.loc[0, "is_granted_invention"] == 1
     assert len(edges) == 1
+
+
+
+def test_missing_applicant_identity_never_forms_backward_composite_key():
+    keys = _applicant_domain_keys(["", "A"], ["H01M4", "H01M4"])
+    assert keys.tolist() == ["", "A||DOMAIN||H01M4"]
+
+
+def test_vector_stage_cleans_stale_files_and_audits_text_coverage(tmp_path):
+    canonical_root = tmp_path / "canonical"
+    year_dir = canonical_root / "application_year=2000"
+    year_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "application_no": ["CN1", "CN2"],
+            "application_date": ["2000-01-01", "2000-02-01"],
+            "application_year": [2000, 2000],
+            "is_granted_invention": [1, 1],
+            "patent_title": ["alpha beta", ""],
+            "abstract": ["", ""],
+            "applicant_identity_key": ["A||ADDR", ""],
+            "applicant_address": ["ADDR", ""],
+            "ipc_domain_key": ["H01M4", "H01M4"],
+            "baseline_firm_eligible": [1, 1],
+        }
+    ).to_parquet(year_dir / "part.parquet", index=False)
+
+    vector_root = tmp_path / "vectors"
+    vector_root.mkdir()
+    stale = vector_root / "stale.parquet"
+    stale.write_text("old", encoding="utf-8")
+
+    _, counts = tokenize_and_build_vocabulary(
+        canonical_root,
+        vector_root,
+        text_fields=["patent_title", "abstract"],
+        min_corpus_frequency=1,
+    )
+
+    assert not stale.exists()
+    assert counts == {2000: 1}
+    audit = pd.read_csv(vector_root / "text_coverage_by_year.csv")
+    assert audit.loc[0, "granted_invention_count"] == 2
+    assert audit.loc[0, "vectorizable_patent_count"] == 1
+    assert audit.loc[0, "text_coverage_rate"] == pytest.approx(0.5)
