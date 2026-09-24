@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classification xmlns="urn:test:ipc">
+  <classification-item level="section" symbol="H">
+    <title lang="en">ELECTRICITY</title>
+  </classification-item>
+  <classification-item level="class" symbol="H01" parent="H">
+    <title lang="en">BASIC ELECTRIC ELEMENTS</title>
+  </classification-item>
+  <classification-item level="subclass" symbol="H01L" parent="H01">
+    <title lang="en">SEMICONDUCTOR DEVICES</title>
+  </classification-item>
+  <classification-item level="main_group" symbol="H01L21/00" parent="H01L">
+    <title lang="en">MANUFACTURE OR TREATMENT OF SEMICONDUCTOR DEVICES</title>
+  </classification-item>
+  <classification-item level="subgroup" symbol="H01L21/3065" parent="H01L21/00">
+    <title lang="en">SPECIALIZED TREATMENT</title>
+  </classification-item>
+</classification>

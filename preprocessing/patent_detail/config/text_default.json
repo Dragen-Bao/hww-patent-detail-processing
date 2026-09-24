@@ -1,0 +1,15 @@
+{
+  "patent_csv": "data/上市公司专利明细_总表_全部年份.csv",
+  "output_root": "data/interim/patent_detail_text_20260919_v3",
+  "shard_count": 32,
+  "buffer_records": 5000,
+  "minimum_group_patents": 10,
+  "history_start_date": "1985-01-01",
+  "formal_sample_start": "1994-01-01",
+  "pipeline_version": "patent_abstract_text_v1_20260919",
+  "text_source": "abstract_text",
+  "ngram_range": [2, 4],
+  "hash_features": 65536,
+  "pit_rule": "application_date_strict_prior_same_day_batch_freeze",
+  "baseline_scope": "invention_utility_listed_company_controlled_subsidiary_global_application_once"
+}

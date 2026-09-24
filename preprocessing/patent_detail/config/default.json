@@ -1,0 +1,19 @@
+{
+  "patent_csv": "data/上市公司专利明细_总表_全部年份.csv",
+  "dictionary": "subprojects/ipc/data/processed/ipc_dictionary_versions_2025_2026.parquet",
+  "output_root": "data/interim/patent_detail_corrected_20260918_reused_raw_shards",
+  "shard_count": 128,
+  "shard_buffer_records": 2000,
+  "alpha": 1.0,
+  "history_start_date": "1985-01-01",
+  "formal_sample_start": "1994-01-01",
+  "pipeline_version": "ipc_patent_detail_v2_20260918",
+  "ipc_dictionary_version": "2026.01+2025.01_bridge",
+  "firm_scope_version": "listed_company_group_controlled_subsidiary_only",
+  "counting_rule_version": "group_application_once_fractional_ipc_pit_date_batch_exclude_design",
+  "ipc_fine_level": "subclass",
+  "ipc_coarse_level": "class",
+  "relatedness_formula": "Nij/sqrt(Ni*Nj)",
+  "distance_formula": "1-relatedness",
+  "skip_plots": false
+}
