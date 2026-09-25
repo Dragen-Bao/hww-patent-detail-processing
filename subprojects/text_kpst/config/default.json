@@ -3,7 +3,7 @@
   "work_dir": "data/interim/text_kpst",
   "output_dir": "data/output/text_kpst",
   "text_fields": ["patent_title", "abstract"],
-  "window_years": 5,
-  "formal_sample_start_year": 1994,
+  "window_quarters": 8,
+  "formal_sample_start_quarter": "1994Q1",
   "shard_count": 128
 }

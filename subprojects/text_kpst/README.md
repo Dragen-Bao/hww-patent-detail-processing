@@ -1,32 +1,35 @@
 # Patent text KPST
 
-This subproject implements the Chen et al. (2026) adaptation of KPST for the local Chinese patent data.
+This subproject adapts the Chen et al. (2026) / KPST patent-text method to a quarterly research design.
 
 Core pipeline:
 
 ```
 raw CSV
-→ canonical patents
+→ canonical patents by application quarter
 → Jieba
-→ TF-BIDF
-→ 5-year BS / FS
+→ quarterly TF-BIDF
+→ 8-quarter BS / FS
 → same-applicant exclusion
-→ IPC-field adjustment
+→ quarterly IPC-field adjustment
 → patent quality
 → market-quarter / firm-quarter
 ```
 
-Method choices:
+Main research choices:
 
+- frequency: quarterly throughout the research pipeline;
 - comparison sample: granted invention patents;
 - text: patent title + abstract;
-- BIDF: `log(N_prior / (1 + df_prior))`;
-- backward: same IPC main group, previous 5 years;
-- forward: all IPC, next 5 years;
+- BIDF: `log(N_prior / (1 + df_prior))`, using patents from earlier quarters only;
+- BS: same IPC main group, previous 8 quarters;
+- FS: all IPC, next 8 quarters;
+- current quarter is excluded from both BS and FS;
 - same applicant: applicant + address;
+- field adjustment: recalculated within each application quarter;
 - final quality: field adjustment × FS / BS.
 
-Only three data-handling rules are treated as essential infrastructure: repair the malformed wrapped CSV, deduplicate by application number, and check that sparse-matrix rows match metadata rows.
+The original paper uses a five-year window. The 8-quarter window is the project's quarterly adaptation rather than an exact replication of that choice.
 
 Install and run:
 
@@ -46,6 +49,6 @@ python -m subprojects.text_kpst.run --stage aggregate
 
 Outputs:
 
-- `data/interim/text_kpst/patent_scores/YYYY.parquet`
+- `data/interim/text_kpst/patent_scores/YYYYQn.parquet`
 - `data/output/text_kpst/market_quarter_kpst.parquet`
 - `data/output/text_kpst/firm_quarter_kpst.parquet`

@@ -1,4 +1,4 @@
-"""Run the patent-text pipeline."""
+"""Run the quarterly patent-text pipeline."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from preprocessing.patent_detail.canonical import build_canonical_dataset
 from subprojects.text_kpst.src.aggregation import aggregate
-from subprojects.text_kpst.src.scalable import build_vectors, score_all_years
+from subprojects.text_kpst.src.scalable import build_vectors, score_all_quarters
 
 CONFIG = Path(__file__).with_name("config") / "default.json"
 
@@ -40,10 +40,10 @@ def main() -> None:
         )
 
     if args.stage in {"all", "score"}:
-        score_all_years(
+        score_all_quarters(
             work / "vectors",
             work / "patent_scores",
-            window=cfg["window_years"],
+            window=cfg["window_quarters"],
         )
 
     if args.stage in {"all", "aggregate"}:
@@ -51,7 +51,7 @@ def main() -> None:
             work,
             work / "patent_scores",
             output,
-            start_year=cfg["formal_sample_start_year"],
+            start_quarter=cfg["formal_sample_start_quarter"],
         )
 
 

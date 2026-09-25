@@ -1,4 +1,4 @@
-"""Large-sample vector construction and KPST scoring."""
+"""Quarterly large-sample vector construction and KPST scoring."""
 
 from __future__ import annotations
 
@@ -13,21 +13,33 @@ from scipy import sparse
 
 from .metrics import add_field_adjustment
 from .preprocess import combine_text, tokenize
-from .tfbidf import vectorize
+from .tfbidf import vectorize_quarter
 
 SEP = "\x1f"
 
 
-def _years(root: Path) -> list[int]:
-    return sorted(
-        int(p.name.split("=")[1])
-        for p in root.glob("application_year=*")
-        if p.name.split("=")[1].isdigit()
-    )
+def _period(value: str) -> pd.Period:
+    return pd.Period(value, freq="Q")
 
 
-def _read_year(root: Path, year: int) -> pd.DataFrame:
-    paths = sorted((root / f"application_year={year}").glob("*.parquet"))
+def _quarters(root: Path) -> list[str]:
+    values = [
+        p.name.split("=", 1)[1]
+        for p in root.glob("application_quarter=*")
+        if p.name.split("=", 1)[1] != "unknown"
+    ]
+    return sorted(values, key=lambda x: _period(x).ordinal)
+
+
+def _window_quarters(quarter: str, window: int) -> tuple[list[str], list[str]]:
+    current = _period(quarter)
+    backward = [str(current - i) for i in range(window, 0, -1)]
+    forward = [str(current + i) for i in range(1, window + 1)]
+    return backward, forward
+
+
+def _read_quarter(root: Path, quarter: str) -> pd.DataFrame:
+    paths = sorted((root / f"application_quarter={quarter}").glob("*.parquet"))
     return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
 
@@ -37,7 +49,7 @@ def build_vectors(
     *,
     text_fields: list[str],
 ) -> None:
-    """Tokenize once, build one vocabulary, then write yearly sparse matrices."""
+    """Build one vocabulary and one sparse matrix per application quarter."""
     if vector_root.exists():
         shutil.rmtree(vector_root)
     token_root = vector_root / "_tokens"
@@ -48,12 +60,12 @@ def build_vectors(
     meta_root.mkdir()
 
     word_counts: Counter[str] = Counter()
-    granted_counts: dict[int, int] = {}
+    granted_counts: dict[str, int] = {}
 
-    for year in _years(canonical_root):
-        frame = _read_year(canonical_root, year)
+    for quarter in _quarters(canonical_root):
+        frame = _read_quarter(canonical_root, quarter)
         frame = frame.loc[frame["granted_invention"].eq(1)].drop_duplicates("application_no")
-        granted_counts[year] = len(frame)
+        granted_counts[quarter] = len(frame)
         if frame.empty:
             continue
 
@@ -70,14 +82,16 @@ def build_vectors(
             [
                 "application_no",
                 "application_date",
-                "application_year",
+                "application_quarter",
                 "applicant_key",
                 "ipc_main_group",
                 "baseline_firm",
             ]
         ].copy()
         frame["tokens"] = [SEP.join(doc) for doc in documents]
-        frame.to_parquet(token_root / f"{year}.parquet", index=False, compression="zstd")
+        frame.to_parquet(
+            token_root / f"{quarter}.parquet", index=False, compression="zstd"
+        )
 
     words = sorted(word_counts)
     vocabulary = {word: i for i, word in enumerate(words)}
@@ -91,32 +105,32 @@ def build_vectors(
     prior_n = 0
     prior_df = np.zeros(len(vocabulary), dtype=np.int64)
 
-    for path in sorted(token_root.glob("*.parquet"), key=lambda p: int(p.stem)):
-        year = int(path.stem)
+    token_paths = sorted(
+        token_root.glob("*.parquet"),
+        key=lambda p: _period(p.stem).ordinal,
+    )
+    for path in token_paths:
+        quarter = path.stem
         frame = pd.read_parquet(path).sort_values(
             ["application_date", "application_no"]
         ).reset_index(drop=True)
         documents = [str(x).split(SEP) for x in frame["tokens"]]
-        matrix, prior_n, prior_df = vectorize(
-            documents,
-            frame["application_date"].astype(str).tolist(),
-            vocabulary,
-            prior_n,
-            prior_df,
+        matrix, prior_n, prior_df = vectorize_quarter(
+            documents, vocabulary, prior_n, prior_df
         )
-        sparse.save_npz(matrix_root / f"{year}.npz", matrix, compressed=True)
+        sparse.save_npz(matrix_root / f"{quarter}.npz", matrix, compressed=True)
         frame.drop(columns="tokens").to_parquet(
-            meta_root / f"{year}.parquet", index=False, compression="zstd"
+            meta_root / f"{quarter}.parquet", index=False, compression="zstd"
         )
 
     shutil.rmtree(token_root)
 
 
-def _load(vector_root: Path, year: int) -> tuple[sparse.csr_matrix, pd.DataFrame]:
-    matrix = sparse.load_npz(vector_root / "matrices" / f"{year}.npz").tocsr()
-    meta = pd.read_parquet(vector_root / "metadata" / f"{year}.parquet")
+def _load(vector_root: Path, quarter: str) -> tuple[sparse.csr_matrix, pd.DataFrame]:
+    matrix = sparse.load_npz(vector_root / "matrices" / f"{quarter}.npz").tocsr()
+    meta = pd.read_parquet(vector_root / "metadata" / f"{quarter}.parquet")
     if matrix.shape[0] != len(meta):
-        raise ValueError(f"matrix/metadata mismatch in {year}")
+        raise ValueError(f"matrix/metadata mismatch in {quarter}")
     return matrix, meta
 
 
@@ -149,37 +163,55 @@ def _aligned_dot(
     return np.asarray(target.multiply(sums[codes]).sum(axis=1)).ravel()
 
 
-def score_all_years(
+def _applicant_field_key(applicant: pd.Series, field: pd.Series) -> pd.Series:
+    applicant = applicant.fillna("").astype(str)
+    field = field.fillna("").astype(str)
+    return pd.Series(
+        np.where(
+            applicant.ne("") & field.ne(""),
+            applicant + "||" + field,
+            "",
+        ),
+        index=applicant.index,
+    )
+
+
+def score_all_quarters(
     vector_root: Path,
     score_root: Path,
     *,
-    window: int = 5,
+    window: int = 8,
 ) -> None:
-    """Method 6: backward same IPC, forward all IPC, exclude same applicant."""
+    """Method 6 with previous/next 8 quarters."""
     if score_root.exists():
         shutil.rmtree(score_root)
     score_root.mkdir(parents=True)
 
     counts = {
-        int(k): int(v)
+        k: int(v)
         for k, v in json.loads(
             (vector_root / "granted_counts.json").read_text(encoding="utf-8")
         ).items()
     }
-    years = sorted(
-        int(p.stem) for p in (vector_root / "matrices").glob("*.npz")
+    quarters = sorted(
+        (p.stem for p in (vector_root / "matrices").glob("*.npz")),
+        key=lambda x: _period(x).ordinal,
     )
+    available = set(quarters)
+    first = _period(quarters[0])
+    last = _period(quarters[-1])
 
-    for year in years:
-        target_matrix, target = _load(vector_root, year)
+    for quarter in quarters:
+        target_matrix, target = _load(vector_root, quarter)
         n = len(target)
         bs_sum = np.zeros(n)
         fs_sum = np.zeros(n)
         target_field = target["ipc_main_group"].fillna("").astype(str)
         target_applicant = target["applicant_key"].fillna("").astype(str)
+        backward, forward = _window_quarters(quarter, window)
 
-        for other in range(year - window, year):
-            if other not in years:
+        for other in backward:
+            if other not in available:
                 continue
             matrix, meta = _load(vector_root, other)
 
@@ -190,20 +222,20 @@ def score_all_years(
             )
             bs_sum += _aligned_dot(target_matrix, field_sum, field_code)
 
-            candidate_pair = (
-                meta["applicant_key"].fillna("").astype(str)
-                + "||"
-                + meta["ipc_main_group"].fillna("").astype(str)
+            same_sum, same_code = _group_sum(
+                matrix,
+                _applicant_field_key(meta["applicant_key"], meta["ipc_main_group"]),
+                _applicant_field_key(target_applicant, target_field),
             )
-            target_pair = target_applicant + "||" + target_field
-            same_sum, same_code = _group_sum(matrix, candidate_pair, target_pair)
             bs_sum -= _aligned_dot(target_matrix, same_sum, same_code)
 
-        for other in range(year + 1, year + window + 1):
-            if other not in years:
+        for other in forward:
+            if other not in available:
                 continue
             matrix, meta = _load(vector_root, other)
-            fs_sum += (target_matrix @ sparse.csr_matrix(matrix.sum(axis=0)).T).toarray().ravel()
+            fs_sum += (
+                target_matrix @ sparse.csr_matrix(matrix.sum(axis=0)).T
+            ).toarray().ravel()
 
             same_sum, same_code = _group_sum(
                 matrix,
@@ -212,16 +244,18 @@ def score_all_years(
             )
             fs_sum -= _aligned_dot(target_matrix, same_sum, same_code)
 
-        bs_den = sum(counts.get(y, 0) for y in range(year - window, year))
-        fs_den = sum(counts.get(y, 0) for y in range(year + 1, year + window + 1))
+        bs_den = sum(counts.get(q, 0) for q in backward)
+        fs_den = sum(counts.get(q, 0) for q in forward)
 
         out = target.copy()
         out["bs"] = bs_sum / bs_den if bs_den else np.nan
         out["fs"] = fs_sum / fs_den if fs_den else np.nan
         out.loc[target_field.eq(""), "bs"] = np.nan
-        out["application_year"] = year
         out["window_complete"] = int(
-            year - window >= min(years) and year + window <= max(years)
+            _period(quarter) - window >= first
+            and _period(quarter) + window <= last
         )
         out = add_field_adjustment(out)
-        out.to_parquet(score_root / f"{year}.parquet", index=False, compression="zstd")
+        out.to_parquet(
+            score_root / f"{quarter}.parquet", index=False, compression="zstd"
+        )

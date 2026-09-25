@@ -61,6 +61,13 @@ def normalize_date(value: object) -> str | None:
     return None if pd.isna(value) else value.strftime("%Y-%m-%d")
 
 
+def application_quarter(value: object) -> str | None:
+    date = normalize_date(value)
+    if not date:
+        return None
+    return str(pd.Period(pd.Timestamp(date), freq="Q"))
+
+
 def normalize_patent_type(value: object) -> str:
     text = clean_text(value)
     if text.startswith("发明"):
@@ -125,7 +132,7 @@ def iter_records(path: Path) -> Iterator[list[str]]:
 
 
 def row_to_record(row: list[str]) -> dict[str, object]:
-    application_date = normalize_date(_get(row, "application_date"))
+    app_date = normalize_date(_get(row, "application_date"))
     grant_date = normalize_date(_get(row, "grant_date"))
     patent_type = normalize_patent_type(_get(row, "patent_type"))
     relation = clean_text(_get(row, "relation"))
@@ -137,7 +144,7 @@ def row_to_record(row: list[str]) -> dict[str, object]:
         "company_name": clean_text(_get(row, "company_name")),
         "relation": relation,
         "application_no": clean_text(_get(row, "application_no")),
-        "application_date": application_date,
+        "application_date": app_date,
         "patent_type": patent_type,
         "patent_title": clean_text(_get(row, "patent_title")),
         "abstract": clean_text(_get(row, "abstract")),
@@ -176,7 +183,7 @@ def canonicalize(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     for application_no, group in frame.groupby("application_no", sort=False):
         dates = sorted({d for d in group["application_date"] if d})
-        application_date = dates[0] if len(dates) == 1 else None
+        app_date = dates[0] if len(dates) == 1 else None
         patent_type = _pick(group["patent_type"])
         grant_no = _pick(group["grant_no"])
         grant_date = _pick(group["grant_date"])
@@ -186,8 +193,8 @@ def canonicalize(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         patents.append({
             "application_no": application_no,
-            "application_date": application_date,
-            "application_year": int(application_date[:4]) if application_date else None,
+            "application_date": app_date,
+            "application_quarter": application_quarter(app_date),
             "patent_type": patent_type,
             "patent_title": _longest(group["patent_title"]),
             "abstract": _longest(group["abstract"]),
@@ -221,15 +228,14 @@ def _shard(application_no: str, n: int) -> int:
     return int.from_bytes(digest, "little") % n
 
 
-def _write_by_year(frame: pd.DataFrame, root: Path, prefix: str) -> None:
+def _write_by_quarter(frame: pd.DataFrame, root: Path, prefix: str) -> None:
     if frame.empty:
         return
-    years = frame["application_date"].astype("string").str[:4]
-    for year, part in frame.assign(_year=years).groupby("_year", dropna=False):
-        label = str(year) if str(year).isdigit() else "unknown"
-        directory = root / f"application_year={label}"
+    for quarter, part in frame.groupby("application_quarter", dropna=False):
+        label = str(quarter) if pd.notna(quarter) and quarter else "unknown"
+        directory = root / f"application_quarter={label}"
         directory.mkdir(parents=True, exist_ok=True)
-        part.drop(columns="_year").to_parquet(
+        part.to_parquet(
             directory / f"{prefix}.parquet", index=False, compression="zstd"
         )
 
@@ -241,7 +247,7 @@ def build_canonical_dataset(
     shard_count: int = 128,
     buffer_size: int = 2000,
 ) -> None:
-    """Create canonical_patents/ and firm_edges/ from the raw CSV."""
+    """Create quarter-partitioned canonical_patents/ and firm_edges/."""
     if output_root.exists():
         shutil.rmtree(output_root)
     raw_root = output_root / "_raw_shards"
@@ -285,13 +291,13 @@ def build_canonical_dataset(
             continue
         raw = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
         patents, edges = canonicalize(raw)
-        _write_by_year(patents, patent_root, f"{shard:04d}")
+        _write_by_quarter(patents, patent_root, f"{shard:04d}")
         if not edges.empty:
             edges = edges.merge(
-                patents[["application_no", "application_date"]],
+                patents[["application_no", "application_date", "application_quarter"]],
                 on="application_no",
                 how="left",
             )
-            _write_by_year(edges, edge_root, f"{shard:04d}")
+            _write_by_quarter(edges, edge_root, f"{shard:04d}")
 
     shutil.rmtree(raw_root)
